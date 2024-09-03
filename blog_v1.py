@@ -70,7 +70,7 @@ if __name__ == "__main__":
 
     # Save the blog content to a .doc file with bold formatting
     output_dir = "output"
-    os.mkdir(output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     filename = os.path.join(output_dir, "Blog_Content.docx")
     extractor.save_to_doc(blog_content, filename)
