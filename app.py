@@ -5,7 +5,8 @@ from docx import Document
 import re
 import json
 import streamlit as st
-from io import BytesIO  # For downloading files
+from io import BytesIO
+from zipfile import ZipFile
 
 class ReviewSnippets:
     def __init__(self):
@@ -14,11 +15,10 @@ class ReviewSnippets:
         self.api_key = os.getenv("Llama_API_KEY")
 
     def get_blog(self, topic, structure):
-        # Prepare the request payload for the Llama model API
         messages = [
             {
                 "role": "system",
-                "content": f'''Generate a blog for my e-commerce site BestViewsReviews for Amazon Products. It is a GenAI platform that analyzes unstructured e-commerce product information like customer reviews, blogs, manufacturer-written product descriptions, etc., and generates insights and product recommendations. 
+                "content": f'''Act as an expert content writer and generate a blog for my e-commerce site BestViewsReviews for Amazon Products. It is a GenAI platform that analyzes unstructured e-commerce product information like customer reviews, blogs, manufacturer-written product descriptions, etc., and generates insights and product recommendations. 
                 Following is the structure of the blog:
                 {structure}
                 Topic: {topic}'''
@@ -29,7 +29,6 @@ class ReviewSnippets:
             }
         ]
 
-        # Define the headers and payload
         headers = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {self.api_key}'
@@ -44,8 +43,7 @@ class ReviewSnippets:
 
         try:
             response = requests.post(self.api_url, headers=headers, data=json.dumps(payload))
-            response.raise_for_status()  # Raises an HTTPError for bad responses (4xx and 5xx)
-            
+            response.raise_for_status()
             response_json = response.json()
             generated_text = response_json['choices'][0]['message']['content']
             return generated_text
@@ -53,42 +51,32 @@ class ReviewSnippets:
         except requests.exceptions.RequestException as e:
             return f"Request failed: {e}"
 
-        except KeyError as e:
-            return f"Key error: {e}"
-
-        except json.JSONDecodeError as e:
-            return f"JSON decode error: {e}"
-
-    def save_to_doc(self, content):
+    def save_to_doc(self, content, topic):
         doc = Document()
         paragraph = doc.add_paragraph()
 
-        # Split the content by double asterisks to identify bold text
         parts = re.split(r'(\*\*.*?\*\*)', content)
-
         for part in parts:
             if part.startswith('**') and part.endswith('**'):
-                # Add bold text
                 run = paragraph.add_run(part[2:-2])
                 run.bold = True
             else:
-                # Add normal text
                 paragraph.add_run(part)
 
-        # Save to a BytesIO object to avoid filesystem issues
         doc_io = BytesIO()
         doc.save(doc_io)
-        doc_io.seek(0)  # Reset the pointer to the beginning of the file
+        doc_io.seek(0)
         return doc_io
 
 # Streamlit UI
 def main():
     st.title("AI Blog Generator for BVR")
-    
-    # Input fields with default values
-    topic = st.text_input("Enter the blog topic", "Best Food Processors in India")
-    structure = st.text_area("Enter the blog structure", 
-        '''Blog Structure:
+
+    mode = st.radio("Select Mode", ["Single Blog", "Multiple Blogs with single blog structure", "Multiple Blogs with separate structure"])
+
+    if mode == "Single Blog":
+        topic = st.text_input("Enter the blog topic", "Best Food Processors in India")
+        structure = st.text_area("Enter the blog structure",'''Blog Structure:
         Introduction
 
         Top picks based on important aspects – two products each aspect (include at least 4 to 5 aspects) - Provide detailed explanation of each product for each aspect, 2 paragraphs for each
@@ -104,33 +92,102 @@ def main():
         What are 3 things you can do with a food processor?
         Which is better food processor or juicer?
         What size of food processor do I need?
-        '''
-    )
+        ''')
 
-    # Check if 'blog_content' exists in session_state, if not, initialize it
-    if 'blog_content' not in st.session_state:
-        st.session_state.blog_content = ""
+        if st.button("Generate Blog"):
+            extractor = ReviewSnippets()
+            blog_content = extractor.get_blog(topic, structure)
+            st.session_state.single_blog_content = blog_content
 
-    # Button to generate blog content
-    if st.button("Generate Blog"):
-        extractor = ReviewSnippets()
-        blog_content = extractor.get_blog(topic, structure)
-        st.session_state.blog_content = blog_content  # Store the generated blog in session state
+        if 'single_blog_content' in st.session_state:
+            st.text_area("Generated Blog Content", st.session_state.single_blog_content, height=400)
+            doc_io = ReviewSnippets().save_to_doc(st.session_state.single_blog_content, topic)
+            st.download_button(
+                label="Download Blog as DOCX",
+                data=doc_io,
+                file_name=f"{topic}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
 
-    # Show the generated content if it exists
-    if st.session_state.blog_content:
-        st.text_area("Generated Blog Content", st.session_state.blog_content, height=400, key="display_blog")
+    elif mode == "Multiple Blogs with single blog structure":
+        topics = st.text_area("Enter the blog topics (one per line)", "Topic 1\nTopic 2\nTopic 3")
+        structure = st.text_area("Enter the blog structure", '''Blog Structure...''')
 
-        # Download the blog as a DOCX file
-        doc_io = ReviewSnippets().save_to_doc(st.session_state.blog_content)
-        st.download_button(
-            label="Download Blog as DOCX",
-            data=doc_io,
-            file_name="Blog_Content.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+        if st.button("Generate Blogs"):
+            extractor = ReviewSnippets()
+            topics_list = topics.split("\n")
+            st.session_state.blogs = []
 
-    # Display user name below
+            for topic in topics_list:
+                blog_content = extractor.get_blog(topic, structure)
+                st.session_state.blogs.append((topic, blog_content))
+
+        if 'blogs' in st.session_state:
+            zip_buffer = BytesIO()
+            with ZipFile(zip_buffer, "w") as zip_file:
+                for topic, blog_content in st.session_state.blogs:
+                    st.text_area(f"Blog for {topic}", blog_content, height=200)
+                    doc_io = ReviewSnippets().save_to_doc(blog_content, topic)
+                    zip_file.writestr(f"{topic}.docx", doc_io.read())
+
+                    st.download_button(
+                        label=f"Download {topic}.docx",
+                        data=doc_io,
+                        file_name=f"{topic}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+
+            zip_buffer.seek(0)
+            st.download_button(
+                label="Download All Blogs as ZIP",
+                data=zip_buffer,
+                file_name="all_blogs.zip",
+                mime="application/zip"
+            )
+
+    elif mode == "Multiple Blogs with separate structure":
+        num_blogs = st.number_input("Enter number of blogs", min_value=1, step=1)
+
+        topics = []
+        structures = []
+        
+        for i in range(num_blogs):
+            topic = st.text_input(f"Enter topic for Blog {i+1}", f"Topic {i+1}")
+            structure = st.text_area(f"Enter structure for Blog {i+1}", f"Structure {i+1}")
+            topics.append(topic)
+            structures.append(structure)
+
+        if st.button("Generate Blogs"):
+            extractor = ReviewSnippets()
+            st.session_state.blogs = []
+
+            for topic, structure in zip(topics, structures):
+                blog_content = extractor.get_blog(topic, structure)
+                st.session_state.blogs.append((topic, blog_content))
+
+        if 'blogs' in st.session_state:
+            zip_buffer = BytesIO()
+            with ZipFile(zip_buffer, "w") as zip_file:
+                for topic, blog_content in st.session_state.blogs:
+                    st.text_area(f"Blog for {topic}", blog_content, height=200)
+                    doc_io = ReviewSnippets().save_to_doc(blog_content, topic)
+                    zip_file.writestr(f"{topic}.docx", doc_io.read())
+
+                    st.download_button(
+                        label=f"Download {topic}.docx",
+                        data=doc_io,
+                        file_name=f"{topic}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+
+            zip_buffer.seek(0)
+            st.download_button(
+                label="Download All Blogs as ZIP",
+                data=zip_buffer,
+                file_name="all_blogs.zip",
+                mime="application/zip"
+            )
+
     st.markdown("---")
     st.markdown("### Created by AkshayTriapthiShorthillsAI")
 
